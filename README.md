@@ -3,7 +3,7 @@
 Simulates effective resistance in random resistor networks built on a 400-node graph. The script samples random edges, assigns random conductances from a normal distribution, constructs a symmetric interaction matrix, inverts it, and computes the effective resistance between a chosen node and the last node. It then averages resistance over multiple random seeds and plots resistance versus edge count for different disorder levels.
 
 ## Contents
-- `arvind.py`: Main simulation and plotting script.
+- `random_resistor_network.py`: Main simulation and plotting script.
 - `*.ipynb`: Exploratory notebooks.
 - `output_*.png`: Generated plots (ignored by default in git).
 
@@ -18,7 +18,7 @@ pip install -r requirements.txt
 Run the main script:
 
 ```bash
-python arvind.py
+python random_resistor_network.py
 ```
 
 This will:
@@ -31,35 +31,35 @@ This will:
 You can customize the run with flags:
 
 ```bash
-python arvind.py --nodes 400 --edges-start 1000 --edges-stop 3000 --edges-step 200 \
+python random_resistor_network.py --nodes 400 --edges-start 1000 --edges-stop 3000 --edges-step 200 \
   --dev-start 1 --dev-stop 10 --seeds 100 --mean 10 --x-node 0
 ```
 
 Save a plot without showing it (useful for headless runs):
 
 ```bash
-python arvind.py --save-plot results.png --no-show
+python random_resistor_network.py --save-plot results.png --no-show
 ```
 
 Save numeric results to CSV:
 
 ```bash
-python arvind.py --save-csv results.csv --no-show
+python random_resistor_network.py --save-csv results.csv --no-show
 ```
 
 Write both CSV and plot into a timestamped output folder:
 
 ```bash
-python arvind.py --output-dir outputs --no-show
+python random_resistor_network.py --output-dir outputs --no-show
 ```
 
 Save run metadata (all CLI args) to JSON:
 
 ```bash
-python arvind.py --save-meta metadata.json --no-show
+python random_resistor_network.py --save-meta metadata.json --no-show
 ```
 
 ## Notes
 - The network size is fixed at 400 nodes in the current script.
 - Runtime can be significant due to repeated sparse matrix inversions.
-- You can adjust parameters (node count, edge counts, number of seeds) inside `arvind.py`.
+- You can adjust parameters (node count, edge counts, number of seeds) inside `random_resistor_network.py`.
