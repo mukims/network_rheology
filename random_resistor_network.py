@@ -1,76 +1,91 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu May  9 15:04:19 2024
+Random Resistor Network Simulation.
+
+Simulates effective electrical resistance in random resistor networks.
+Implements the exact reduced Laplacian formulation for high-performance and exact Kirchhoff compliance.
 
 @author: shardul
 """
+
 import argparse
-import json
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
+import json
+import os
 from pathlib import Path
-import numpy as np
+from typing import List, Tuple
 import matplotlib.pyplot as plt
-import scipy.sparse as sc
 import networkx as nx
-from numpy.random import choice
+import numpy as np
+import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
-def create_graph_from_sample(edges, seed, nodes=400):
-    np.random.seed(seed)
+from network_rheology.distributions import generate_conductances
+from network_rheology.solvers.dc_solver import solve_effective_resistance_fast
+from network_rheology.topologies.random_graph import create_random_edges_fast
+
+
+def create_graph_from_sample(edges: int, seed: int, nodes: int = 400) -> nx.Graph:
+    """
+    Sample a random graph with `nodes` nodes and `edges` edges.
+    Guarantees all `nodes` are preserved in the graph to prevent out-of-bounds indexing.
+    """
+    rng = np.random.default_rng(seed)
     max_edges = nodes * (nodes - 1) // 2
     if edges > max_edges:
         raise ValueError(f"Requested number of edges ({edges}) exceeds the maximum possible ({max_edges}).")
-    possible_edges = [(i, j) for i in range(nodes) for j in range(i + 1, nodes)]
-    sample_indices = choice(len(possible_edges), edges, replace=False)
-    sampled_edges = [possible_edges[i] for i in sample_indices]
+
+    u_idx, v_idx = create_random_edges_fast(nodes=nodes, edges=edges, rng=rng)
     G = nx.Graph()
-    G.add_edges_from(sampled_edges)
+    G.add_nodes_from(range(nodes))  # Ensure all nodes exist
+    G.add_edges_from(zip(u_idx, v_idx))
     return G
-#nx.draw(create_graph_from_sample(1600, 23))
-# Function to generate random values with a normal distribution
-def generate_random_values(mean, std, seed, num_edges):
-    np.random.seed(seed)
-    return np.abs(np.random.normal(mean, std, num_edges))
-
-# Function to compute the interaction matrix
-def matrix_interactions(w, meanc, stdc, edges, seed, nodes=400):
-    grid = create_graph_from_sample(edges, seed, nodes=nodes)
-    num_edges = grid.number_of_edges()
-    nodes = grid.number_of_nodes()
-    cap_values = generate_random_values(meanc, stdc, seed, num_edges)
-    
-    adjM = sc.lil_matrix((nodes, nodes), dtype=np.complex128)
-    edges2 = list(grid.edges())
-    interactions = 1 / cap_values
-    
-    for edge_idx, (i, j) in enumerate(edges2):
-        interaction_value = interactions[edge_idx]
-        adjM[i, j] = interaction_value
-        adjM[j, i] = interaction_value  # Ensure the matrix is symmetric
-    
-    adjM.setdiag(adjM.sum(axis=1).A1 - 0.0001)
-    
-    MI = spla.inv(adjM.tocsc())  # Using inv for CSC matrices
-
-    return MI, nodes
 
 
+def generate_random_values(mean: float, std: float, seed: int, num_edges: int) -> np.ndarray:
+    """
+    Generate random conductance values with log-normal or normal distribution.
+    """
+    rng = np.random.default_rng(seed)
+    return generate_conductances(mean=mean, std=std, size=num_edges, dist="lognormal", rng=rng)
 
-#plt.figure(figsize=(12, 12))
-#G1=create_graph_from_sample(1000, 1)
-#print(matrix_interactions(0, 10, 1, 1200, 1))
-#nx.draw(G1,pos=nx.spring_layout(G1),node_size=3,alpha = 0.5)
-#nx.draw_networkx_nodes(G1,pos=nx.spring_layout(G1), nodelist=[0,399], node_color='red', node_size=10)
-#plt.show()
+
+def matrix_interactions(w: float, meanc: float, stdc: float, edges: int, seed: int, nodes: int = 400):
+    """
+    Construct the true Kirchhoff graph Laplacian L = D - A and compute effective impedance / resistance.
+    """
+    rng = np.random.default_rng(seed)
+    u_idx, v_idx = create_random_edges_fast(nodes=nodes, edges=edges, rng=rng)
+    cap_values = generate_random_values(meanc, stdc, seed, edges)
+    conductances = cap_values  # Conductance values
+
+    # Build true Laplacian L = D - A
+    rows = np.concatenate([u_idx, v_idx, u_idx, v_idx])
+    cols = np.concatenate([v_idx, u_idx, u_idx, v_idx])
+    data = np.concatenate([-conductances, -conductances, conductances, conductances])
+    L = sp.coo_matrix((data, (rows, cols)), shape=(nodes, nodes)).tocsc()
+
+    return L, nodes
 
 
-def R(w, meanc, stdc, edges, seed, x, nodes=400):
-    MI, nodes = matrix_interactions(w, meanc, stdc, edges, seed, nodes=nodes)
-    
-    if x >= nodes:
-        raise IndexError(f"Node index out of bounds: x={x}, nodes={nodes}")
-    
-    return MI[x, x] + MI[nodes - 1, nodes - 1] - MI[x, nodes - 1] - MI[nodes - 1, x], nodes
+def R(w: float, meanc: float, stdc: float, edges: int, seed: int, x: int, nodes: int = 400) -> Tuple[float, int]:
+    """
+    Compute the effective two-point resistance between node x and node nodes - 1.
+    """
+    rng = np.random.default_rng(seed)
+    u_idx, v_idx = create_random_edges_fast(nodes=nodes, edges=edges, rng=rng)
+    conductances = generate_conductances(mean=meanc, std=stdc, size=edges, dist="lognormal", rng=rng)
+
+    res = solve_effective_resistance_fast(
+        num_nodes=nodes,
+        u_indices=u_idx,
+        v_indices=v_idx,
+        conductances=conductances,
+        node_a=x,
+        node_b=nodes - 1,
+    )
+    return res, nodes
 
 
 def parse_args():
@@ -82,8 +97,10 @@ def parse_args():
     parser.add_argument("--dev-start", type=int, default=1, help="Starting disorder (std) value (inclusive).")
     parser.add_argument("--dev-stop", type=int, default=10, help="Stopping disorder (std) value (exclusive).")
     parser.add_argument("--seeds", type=int, default=100, help="Number of random seeds per edge count.")
-    parser.add_argument("--mean", type=float, default=10.0, help="Mean of the normal distribution.")
+    parser.add_argument("--mean", type=float, default=10.0, help="Mean of the distribution.")
+    parser.add_argument("--dist", type=str, default="lognormal", choices=["lognormal", "truncated_normal", "folded_normal", "uniform", "constant"])
     parser.add_argument("--x-node", type=int, default=0, help="Node index for resistance calculation.")
+    parser.add_argument("--workers", type=int, default=None, help="Number of parallel worker processes.")
     parser.add_argument("--save-csv", type=str, default="", help="Path to save results as CSV (optional).")
     parser.add_argument("--save-plot", type=str, default="", help="Path to save plot (optional).")
     parser.add_argument("--output-dir", type=str, default="", help="Create a timestamped output folder and save CSV/plot inside it.")
@@ -92,23 +109,48 @@ def parse_args():
     return parser.parse_args()
 
 
+def _eval_single_point(args_tuple):
+    seed, mean, dev, edges, x_node, nodes, dist = args_tuple
+    rng = np.random.default_rng(seed)
+    u_idx, v_idx = create_random_edges_fast(nodes=nodes, edges=edges, rng=rng)
+    conductances = generate_conductances(mean=mean, std=dev, size=edges, dist=dist, rng=rng)
+    return solve_effective_resistance_fast(
+        num_nodes=nodes,
+        u_indices=u_idx,
+        v_indices=v_idx,
+        conductances=conductances,
+        node_a=x_node,
+        node_b=nodes - 1,
+    )
+
+
 def run_simulation(args):
+    """
+    Run parameter sweep with parallel multi-core execution.
+    """
+    num_workers = args.workers if getattr(args, "workers", None) else os.cpu_count() or 1
+    dist = getattr(args, "dist", "lognormal")
     results = []
-    for dev in range(args.dev_start, args.dev_stop):
-        print(f"Disorder (std) = {dev}")
-        dev_results = []
-        for edges in range(args.edges_start, args.edges_stop, args.edges_step):
-            print(f"  Processing edges: {edges}")
-            resistances = []
-            for seed in range(args.seeds):
-                try:
-                    resistance, _ = R(0, args.mean, dev, edges, seed, args.x_node, nodes=args.nodes)
-                    resistances.append(np.abs(resistance))
-                except IndexError as e:
-                    print(f"  Skipping seed {seed} due to index error: {e}")
-            if resistances:
-                dev_results.append([edges, np.mean(resistances)])
-        results.append(dev_results)
+
+    print(f"Starting simulation on {num_workers} worker processes...")
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        for dev in range(args.dev_start, args.dev_stop):
+            print(f"Disorder (std) = {dev}")
+            dev_results = []
+            for edges in range(args.edges_start, args.edges_stop, args.edges_step):
+                tasks = [
+                    (seed, args.mean, float(dev), edges, args.x_node, args.nodes, dist)
+                    for seed in range(args.seeds)
+                ]
+                futures = [executor.submit(_eval_single_point, t) for t in tasks]
+                resistances = []
+                for f in futures:
+                    res = f.result()
+                    if np.isfinite(res):
+                        resistances.append(res)
+                if resistances:
+                    dev_results.append([edges, float(np.mean(resistances))])
+            results.append(dev_results)
     return results
 
 
@@ -119,7 +161,7 @@ def save_csv(results, args):
         f.write("dev,edges,avg_resistance\n")
         for dev, dev_res in zip(range(args.dev_start, args.dev_stop), results):
             for edges, avg_res in dev_res:
-                f.write(f"{dev},{int(edges)},{float(avg_res)}\n")
+                f.write(f"{dev},{int(edges)},{float(avg_res):.6f}\n")
 
 
 def prepare_output_paths(args):
@@ -159,18 +201,22 @@ def save_metadata(args):
 
 
 def plot_results(results, args):
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
     for dev, dev_res in zip(range(args.dev_start, args.dev_stop), results):
         if not dev_res:
             continue
         dev_arr = np.array(dev_res)
-        plt.plot(dev_arr[:, 0], dev_arr[:, 1], label=f"{dev}")
+        ax.plot(dev_arr[:, 0], dev_arr[:, 1], marker="o", label=f"std = {dev}")
 
-    plt.xlabel("size")
-    plt.ylabel("Average Resistance")
-    plt.legend(title="std")
+    ax.set_xlabel("Edge Count (M)", fontsize=12)
+    ax.set_ylabel(r"Average Effective Resistance ($\Omega$)", fontsize=12)
+    ax.set_title("Random Resistor Network: Resistance vs Connectivity", fontsize=13)
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.legend(title="Disorder (std)", frameon=True)
 
+    plt.tight_layout()
     if args.save_plot:
-        plt.savefig(args.save_plot, dpi=150, bbox_inches="tight")
+        plt.savefig(args.save_plot, dpi=200, bbox_inches="tight")
     if not args.no_show:
         plt.show()
 

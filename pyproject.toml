@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "network_rheology"
+version = "0.1.0"
+description = "High-performance simulation of electrical transport, effective resistance, and complex impedance in disordered and structured resistor networks."
+readme = "README.md"
+authors = [
+    { name = "Shardul Mukim" }
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20.0",
+    "scipy>=1.7.0",
+    "matplotlib>=3.4.0",
+    "networkx>=2.6.0",
+    "pandas>=1.3.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0"
+]
+opt = [
+    "scikit-optimize>=0.9.0"
+]
+
+[project.scripts]
+network-rheology = "network_rheology.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["network_rheology*"]
